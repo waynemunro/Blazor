@@ -27,8 +27,22 @@
 #include "Heap.h"
 #include "Type.h"
 
+int releaseBreakPoint = 0;
+int waitingOnBreakPoint = 0;
+int alwaysBreak = 0;
+
 static tThread *pAllThreads = NULL;
 static tThread *pCurrentThread;
+
+U32 Internal_Debugger_Resume_Check(PTR pThis_, PTR pParams, PTR pReturnValue, tAsyncCall *pAsync) {
+    if (releaseBreakPoint) {
+        releaseBreakPoint = 0;
+        waitingOnBreakPoint = 0;
+        return 1;
+    }
+    return 0;
+}
+
 
 tThread* Thread() {
 	static U32 threadID = 0;
@@ -123,7 +137,8 @@ I32 Thread_Execute() {
 		U32 minSleepTime = 0xffffffff;
 		I32 threadExitValue;
 
-		status = JIT_Execute(pThread, 100);
+        status = JIT_Execute(pThread, 100);
+
 		switch (status) {
 		case THREAD_STATUS_EXIT:
 			threadExitValue = pThread->threadExitValue;
@@ -203,7 +218,25 @@ I32 Thread_Execute() {
 					if ((U32)msSleepRemaining < minSleepTime) {
 						minSleepTime = msSleepRemaining;
 					}
-				} else {
+				}
+                else if (pThread->pAsync->checkFn == Internal_Debugger_Resume_Check) {
+                    U32 unblocked;
+
+                    // Forced debugger break
+                    unblocked = pAsync->checkFn(NULL, NULL, NULL, pAsync);
+                    if (unblocked) {
+                        // The IO has unblocked, and the return value is ready.
+                        // So delete the async object.
+                        // TODO: The async->state object needs to be deleted somehow (maybe)
+                        free(pAsync);
+                        // And remove it from the thread
+                        pThread->pAsync = NULL;
+                        break;
+                    }
+
+                    return 0;
+                }
+                else {
 					// This is blocking IO, or a lock
 					tMethodState *pMethodState = pThread->pCurrentMethodState;
 					PTR pThis;
@@ -236,7 +269,10 @@ I32 Thread_Execute() {
 			if (pThread == pPrevThread) {
 				// When it gets here, it means that all threads are currently blocked.
 				//printf("All blocked; sleep(%d)\n", minSleepTime);
-				SleepMS(minSleepTime);
+                // Execution needs to unwind if everything is blocked in javascript or it will
+                // hang the browser's main thread, we need to schedule a call back into this method at a later time
+                return minSleepTime;
+				// SleepMS(minSleepTime);
 			}
 		}
 	}

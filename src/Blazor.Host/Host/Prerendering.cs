@@ -5,7 +5,6 @@ using System.Threading.Tasks;
 using Blazor.Components;
 using Blazor.Routing;
 using Blazor.VirtualDom;
-using MiniJSON;
 using System.Collections.Generic;
 using System;
 using System.Runtime.Loader;
@@ -13,7 +12,6 @@ using System.Linq;
 using Blazor.Sdk.Host;
 using Blazor.Runtime.Components;
 using Microsoft.AspNetCore.Http;
-using System.Diagnostics;
 
 namespace Blazor.Host
 {
@@ -25,10 +23,10 @@ namespace Blazor.Host
     {
         private static string[] viewReferenceAssemblies;
 
-        internal static void EnablePrerendering(string clientBinDir, string assemblyName)
+        internal static void EnablePrerendering(string clientRootDir, string clientBinDir, string assemblyName)
         {
             var clientAppAssemblyPath = Path.Combine(clientBinDir, assemblyName);
-            var entrypointAssembly = AssemblyLoadContext.Default.LoadFromAssemblyPath(clientAppAssemblyPath);
+            var entrypointAssembly = LoadAssemblyFromPath(clientAppAssemblyPath);
             var entrypoint = entrypointAssembly.EntryPoint;
             entrypoint.Invoke(null, new[] { new string[0] });
             var envField = typeof(Blazor.Runtime.Env)
@@ -105,7 +103,7 @@ namespace Blazor.Host
                         await AppendVDom(sb, ownerComponent, vdom, childIndex);
 
                         // Skip descendants of children
-                        if (childItem.ItemType == VDomItemType.Element)
+                        if (childItem.ItemType == VDomItemType.Element || childItem.ItemType == VDomItemType.Component)
                         {
                             childIndex = childItem.DescendantsEndIndex;
                         }
@@ -202,13 +200,25 @@ namespace Blazor.Host
         private static Assembly GetCompiledViewsAssembly(string rootPath, string appAssemblyName, string[] referenceAssemblies)
         {
             var viewsAssemblyName = appAssemblyName.Replace(".dll", $".{ ++viewAssemblyCount }.Views.dll");
-            var viewAssemblyBytes = RazorCompilation.GetCompiledViewsAssembly(
+            var (viewAssemblyBytes, viewSymbolBytes) = RazorCompilation.GetCompiledViewsAssembly(
                 rootPath,
                 viewsAssemblyName,
                 referenceAssemblies);
             using (var ms = new MemoryStream(viewAssemblyBytes))
+            using (var symbols = new MemoryStream(viewSymbolBytes))
             {
-                return AssemblyLoadContext.Default.LoadFromStream(ms);
+                return AssemblyLoadContext.Default.LoadFromStream(ms, symbols);
+            }
+        }
+
+        private static Assembly LoadAssemblyFromPath(string path)
+        {
+            // Load from stream to avoid locking the file on disk
+            // Unfortunately that also prevents debugging into this assembly
+            using (var fs = File.OpenRead(path))
+            using (var symbols = File.OpenRead(Path.ChangeExtension(path, ".pdb")))
+            {
+                return AssemblyLoadContext.Default.LoadFromStream(fs, symbols);
             }
         }
     }

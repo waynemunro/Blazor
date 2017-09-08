@@ -13,7 +13,7 @@ namespace Blazor.Sdk.Host
     internal static class RazorCompilation
     {
         static PathString binDir = new PathString("/_bin");
-        static IDictionary<string, byte[]> cachedCompilationResults = new Dictionary<string, byte[]>();
+        static IDictionary<string, (byte[], byte[])> cachedCompilationResults = new Dictionary<string, (byte[], byte[])>();
         static object cachedCompilationResultsLock = new object();
         static FileSystemWatcher activeFileSystemWatcher; // If we don't hold a reference to this, it gets disposed automatically on Linux (though not on Windows)
 
@@ -24,15 +24,30 @@ namespace Blazor.Sdk.Host
             builder.Use(async (context, next) =>
             {
                 var req = context.Request;
-                if (req.Path.StartsWithSegments(binDir) && req.Query["type"] == "razorviews")
+                if (req.Path.StartsWithSegments(binDir)
+                    && req.Query["type"] == "razorviews"
+                    && req.Path.Value.EndsWith(".dll"))
                 {
-                    await ServeCompiledAssembly(context, rootDir);
+                    var compiledAssembly = GetCompiledViewsAssembly(rootDir, context.Request);
+                    context.Response.ContentType = "application/octet-steam";
+                    await context.Response.Body.WriteAsync(compiledAssembly.Item1, 0, compiledAssembly.Item1.Length);
                 }
                 else
                 {
                     await next();
                 }
             });
+        }
+
+        public static (byte[], byte[]) GetCachedCompiledAssembly(string assemblyName)
+        {
+            lock(cachedCompilationResultsLock)
+            {
+                var cacheKey = assemblyName;
+                return cachedCompilationResults.TryGetValue(cacheKey, out var result)
+                    ? result
+                    : (null, null);
+            }
         }
 
         private static void BeginFileSystemWatcher(string rootDir)
@@ -66,24 +81,20 @@ namespace Blazor.Sdk.Host
             }
         }
 
-        private static async Task ServeCompiledAssembly(HttpContext context, string rootDir)
+        internal static (byte[], byte[]) GetCompiledViewsAssembly(string rootDir, HttpRequest forRequest)
         {
             // Determine the desired views assembly name based on the URL
-            var requestPath = context.Request.Path.Value;
-            var assemblyFilename = requestPath.Substring(requestPath.LastIndexOf('/') + 1);
-            var references = context.Request.Query["reference"];
-
-            // Serve the assembly
-            context.Response.ContentType = "application/octet-steam";
-            var compiledAssembly = GetCompiledViewsAssembly(rootDir, assemblyFilename, references);
-            await context.Response.Body.WriteAsync(compiledAssembly, 0, compiledAssembly.Length);
+            var requestPath = forRequest.Path.Value;
+            var assemblyFilename = Path.ChangeExtension(requestPath.Substring(requestPath.LastIndexOf('/') + 1), "dll");
+            var references = forRequest.Query["reference"];
+            return GetCompiledViewsAssembly(rootDir, assemblyFilename, references);
         }
 
-        internal static byte[] GetCompiledViewsAssembly(string rootDir, string assemblyFilename, IEnumerable<string> references)
+        internal static (byte[], byte[]) GetCompiledViewsAssembly(string rootDir, string assemblyFilename, IEnumerable<string> references)
         {
             // Get or create cached compilation result. Doesn't really matter that we might be blocking
             // other request threads with this lock, as this is a development-time feature only.
-            byte[] compiledAssembly;
+            (byte[], byte[]) compiledAssembly;
             lock (cachedCompilationResultsLock)
             {
                 var cacheKey = assemblyFilename;
@@ -98,7 +109,7 @@ namespace Blazor.Sdk.Host
             return compiledAssembly;
         }
 
-        private static byte[] PerformCompilation(string assemblyFilename, string rootDir, IEnumerable<string> additionalReferenceAssemblies)
+        private static (byte[], byte[]) PerformCompilation(string assemblyFilename, string rootDir, IEnumerable<string> additionalReferenceAssemblies)
         {
             // Get the total list of assembly paths to reference during compilation
             var inferredMainAssemblyFilename = InferMainAssemblyFilename(assemblyFilename);
@@ -110,15 +121,27 @@ namespace Blazor.Sdk.Host
             referenceAssemblyFilenames.AddRange(additionalReferenceAssemblies);
 
             using (var ms = new MemoryStream())
+            using (var symbols = new MemoryStream())
             {
                 RazorVDomCompiler.CompileToStream(
                     enableLogging: false,
                     rootDir: rootDir,
-                    referenceAssemblies: referenceAssemblyFilenames.Select(filename => Path.Combine(rootDir, "bin", "Debug", "netcoreapp1.0", filename)).ToArray(),
-                    outputAssemblyName: Path.GetFileNameWithoutExtension(assemblyFilename),
-                    outputStream: ms);
+                    referenceAssemblies: referenceAssemblyFilenames.Select(filename =>
+                    {
+                        var path = Path.Combine(rootDir, "bin", "Debug", "netcoreapp1.0", filename);
 
-                return ms.ToArray();
+                        if (!File.Exists(path))
+                        {
+                            path = Path.Combine(rootDir, filename);
+                        }
+
+                        return path;
+                    }).ToArray(),
+                    outputAssemblyName: Path.GetFileNameWithoutExtension(assemblyFilename),
+                    outputStream: ms,
+                    pdbStream: symbols);
+
+                return (ms.ToArray(), symbols.ToArray());
             }
         }
 
@@ -129,6 +152,13 @@ namespace Blazor.Sdk.Host
             {
                 return $"{partBeforeSuffix.Groups[1].Value}.dll";
             }
+
+            partBeforeSuffix = Regex.Match(viewsAssemblyFilename, "(.*)\\.Views\\.dll$");
+            if (partBeforeSuffix.Success)
+            {
+                return $"{partBeforeSuffix.Groups[1].Value}.dll";
+            }
+
 
             return null;
         }

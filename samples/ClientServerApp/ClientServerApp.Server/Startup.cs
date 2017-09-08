@@ -68,6 +68,7 @@ namespace ClientServerApp.Server
             app.UseBlazorUI(Path.Combine("..", "ClientServerApp.Client"), opts =>
             {
                 opts.EnableServerSidePrerendering = true;
+                opts.EnableDebugging = true;
                 opts.ClientAssemblyName = "ClientServerApp.Client.dll";
             });
         }

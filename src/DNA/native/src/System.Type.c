@@ -55,7 +55,7 @@ void DotNetStringToCString(unsigned char* buf, U32 bufLength, STRING dotnetStrin
 		Crash("String of length %i was too long for buffer of length %i\n", stringLen, bufLength);
 	}
 
-	int i;
+	U32 i;
 	for (i=0; i<stringLen; i++) {
 		buf[i] = (unsigned char)dotnetString2[i];
 	}
@@ -128,7 +128,8 @@ tAsyncCall* System_Type_GetProperties(PTR pThis_, PTR pParams, PTR pReturnValue)
 
 	// Now fill the PropertyInfo[]
 	for (i=0; i<numProperties; i++) {
-		tMD_Property *pPropertyMetadata = (tMD_Property*)MetaData_GetTableRow(pMetaData, MAKE_TABLE_INDEX(MD_TABLE_PROPERTY, firstIdx + i));
+		IDX_TABLE index = MAKE_TABLE_INDEX(MD_TABLE_PROPERTY, firstIdx + i);
+		tMD_Property *pPropertyMetadata = (tMD_Property*)MetaData_GetTableRow(pMetaData, index);
 
 		// Instantiate PropertyInfo and put it in the array
 		tPropertyInfo *pPropertyInfo = (tPropertyInfo*)Heap_AllocType(types[TYPE_SYSTEM_REFLECTION_PROPERTYINFO]);
@@ -148,6 +149,10 @@ tAsyncCall* System_Type_GetProperties(PTR pThis_, PTR pParams, PTR pReturnValue)
 		tMD_TypeDef *propertyTypeDef = Type_GetTypeFromSig(pMetaData, &typeSig, NULL, NULL);
 		MetaData_Fill_TypeDef(propertyTypeDef, NULL, NULL);
 		pPropertyInfo->propertyType = Type_GetTypeObject(propertyTypeDef);
+
+		// Assign propertyMetadata
+		pPropertyInfo->index = index;
+		pPropertyInfo->pMetaData = pPropertyMetadata;
 	}
 
 	return NULL;
@@ -164,7 +169,7 @@ tAsyncCall* System_Type_GetMethod(PTR pThis_, PTR pParams, PTR pReturnValue)
 	tMD_TypeDef *pTypeDef = pRuntimeType->pTypeDef;
 
 	// Search for the method by name
-	for (int i=0; i<pTypeDef->numMethods; i++) {
+	for (U32 i=0; i<pTypeDef->numMethods; i++) {
 		if (strcmp(pTypeDef->ppMethods[i]->name, methodName) == 0) {
 			tMD_MethodDef *pMethodDef = pTypeDef->ppMethods[i];
 
@@ -180,7 +185,7 @@ tAsyncCall* System_Type_GetMethod(PTR pThis_, PTR pParams, PTR pReturnValue)
 			// Assign method def
 			pMethodInfo->methodBase.methodDef = pMethodDef;
 
-			*(HEAP_PTR*)pReturnValue = (HEAP_PTR*)pMethodInfo;
+			*(HEAP_PTR*)pReturnValue = (HEAP_PTR)pMethodInfo;
 			return NULL;
 		}
 	}

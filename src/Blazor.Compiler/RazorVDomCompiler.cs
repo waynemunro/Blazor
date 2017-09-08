@@ -1,6 +1,5 @@
 ﻿using Blazor.Components;
 using Microsoft.AspNetCore.Razor.Language.Intermediate;
-using Microsoft.AspNetCore.Razor.Language.CodeGeneration;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using System;
@@ -10,6 +9,7 @@ using System.Linq;
 using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Razor.Language;
 using System.Reflection;
+using Microsoft.CodeAnalysis.Emit;
 
 namespace RazorRenderer
 {
@@ -24,12 +24,13 @@ namespace RazorRenderer
             var outputAssemblyName = Path.GetFileNameWithoutExtension(outputFilename);
 
             using (var fs = File.OpenWrite(outputFilename))
+            using (var pdbStream = File.OpenWrite(Path.ChangeExtension(outputFilename, ".pdb")))
             {
-                return CompileToStream(enableLogging, rootDir, referenceAssemblies, outputAssemblyName, fs);
+                return CompileToStream(enableLogging, rootDir, referenceAssemblies, outputAssemblyName, fs, pdbStream);
             }
         }
 
-        public static string CompileToStream(bool enableLogging, string rootDir, string[] referenceAssemblies, string outputAssemblyName, Stream outputStream)
+        public static string CompileToStream(bool enableLogging, string rootDir, string[] referenceAssemblies, string outputAssemblyName, Stream outputStream, Stream pdbStream)
         {
             if (!rootDir.EndsWith(Path.DirectorySeparatorChar.ToString()))
             {
@@ -81,7 +82,7 @@ namespace RazorRenderer
                 .Cast<MetadataReference>()
                 .ToList();
 
-            CompileToFile(syntaxTrees, modelAssemblyRefs, outputAssemblyName, outputStream);
+            CompileToFile(syntaxTrees, modelAssemblyRefs, outputAssemblyName, outputStream, pdbStream);
             return $"Compiled {syntaxTrees.Count} view(s) as {outputAssemblyName}";
         }
 
@@ -318,28 +319,33 @@ namespace RazorRenderer
             return (string)locationProperty.GetValue(assembly);
         }
 
-        static void CompileToFile(IList<SyntaxTree> syntaxTrees, IList<MetadataReference> assemblyReferences, string outputAssemblyName, Stream outputStream)
+        static void CompileToFile(IList<SyntaxTree> syntaxTrees, IList<MetadataReference> assemblyReferences, string outputAssemblyName, Stream outputStream, Stream pdbStream)
         {
             var standardReferencePaths = new[]
             {
                 AssemblyLocation("mscorlib"),
                 AssemblyLocation(typeof(object)), // CoreLib
+                AssemblyLocation("System.Console"),
                 AssemblyLocation("System.Collections"),
                 AssemblyLocation("System.Linq"),
                 AssemblyLocation("System.Runtime"),
                 AssemblyLocation("System.Threading.Tasks"),
                 AssemblyLocation("System.Net.Http"),
                 AssemblyLocation("System.Private.Uri"),
-                AssemblyLocation(typeof(RazorComponent)) // Blazor
+                AssemblyLocation(typeof(RazorComponent)), // Blazor
             };
             var allReferences = assemblyReferences
                 .Concat(standardReferencePaths.Select(assemblyLocation => MetadataReference.CreateFromFile(assemblyLocation)))
                 .ToList();
 
+            var compilationOptions = new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
+                .WithOptimizationLevel(OptimizationLevel.Debug);
+
             var compilation = CSharpCompilation.Create(outputAssemblyName,
                 syntaxTrees: syntaxTrees,
                 references: allReferences,
-                options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+                options: compilationOptions);
+
             var errors = compilation.GetDiagnostics().Where(d => d.Severity == DiagnosticSeverity.Error);
 
             if (errors.Any())
@@ -352,7 +358,8 @@ namespace RazorRenderer
             }
 
             // Success
-            compilation.Emit(outputStream);
+            var emitOptions = new EmitOptions().WithDebugInformationFormat(DebugInformationFormat.PortablePdb);
+            compilation.Emit(outputStream, pdbStream, options: emitOptions);
         }
     }
 }

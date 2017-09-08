@@ -29,15 +29,22 @@ namespace System.Net.Http
             }
         }
 
-        public Task<HttpResponseMessage> GetAsync(string url)
+        private int _sendAsyncCount = 0;
+
+        public Task<HttpResponseMessage> SendAsync(HttpRequestMessage request)
         {
+            var count = Interlocked.Increment(ref _sendAsyncCount);
+
             var tcs = new TaskCompletionSource<HttpResponseMessage>();
 
-            BeginGetResponse(url, ar =>
+            var body = request.Content as StringContent;
+
+            BeginResponse(request.Method?.Method ?? HttpMethod.Get.Method, request.Url, body?.Content, body?.MediaType, ar =>
             {
                 try
                 {
-                    var response = EndGetResponse(ar);
+                    var response = EndResponse(ar);
+
                     if ((int)response.StatusCode < 200 || (int)response.StatusCode >= 300)
                     {
                         throw new HttpClientException($"Response status code was {response.StatusCode}");
@@ -54,18 +61,24 @@ namespace System.Net.Http
             return tcs.Task;
         }
 
+        public Task<HttpResponseMessage> GetAsync(string url) =>
+            SendAsync(new HttpRequestMessage(HttpMethod.Get, url));
+
         public async Task<string> GetStringAsync(string url)
         {
             var response = await GetAsync(url);
             return await response.Content.ReadAsStringAsync();
         }
 
-        private IAsyncResult BeginGetResponse(string url, AsyncCallback asyncCallback, object state)
+        private IAsyncResult BeginResponse(string method, string url, string body, string mediaType, AsyncCallback asyncCallback, object state)
         {
             var asyncResult = new HttpClientAsyncResult(asyncCallback, state);
             var gcHandle = GCHandle.Alloc(asyncResult, GCHandleType.Pinned);
             var descriptorDict = new Dictionary<string, object>()
             {
+                { "method", method },
+                { "body", body },
+                { "mediaType", mediaType },
                 { "url", url },
                 { "asyncResultAddress", gcHandle.AddrOfPinnedObject().ToInt32() }
             };
@@ -73,7 +86,7 @@ namespace System.Net.Http
             return asyncResult;
         }
 
-        private HttpResponseMessage EndGetResponse(IAsyncResult asyncResult)
+        private HttpResponseMessage EndResponse(IAsyncResult asyncResult)
         {
             return ((HttpClientAsyncResult)asyncResult).Result;
         }

@@ -8,11 +8,9 @@ namespace System.Reflection
 
     public abstract class MethodBase : MemberInfo
     {
-        private readonly Type _ownerType;
-        private readonly string _name;
+#pragma warning disable 0169, 0649
         private readonly IntPtr _methodDef;
-
-        public override string Name => _name;
+#pragma warning restore 0169, 0649
         
         public object Invoke(object target, object[] parameters)
         {

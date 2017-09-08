@@ -1,21 +1,20 @@
-﻿using Blazor.Sdk.Host;
+﻿using System;
+using System.IO;
+using System.Reflection;
+using Blazor.Sdk.Host;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.Extensions.FileProviders;
-using System;
-using System.Collections.Generic;
-using System.IO;
-using System.Linq;
-using System.Reflection;
-using System.Runtime.Loader;
-using System.Text;
+using Blazor.Host.Debugging;
+using Blazor.Host.Debugging.Discovery;
 
 namespace Blazor.Host
 {
     public class BlazorUIOptions
     {
         public bool EnableServerSidePrerendering { get; set; }
+        public bool EnableDebugging { get; set; }
         public string ClientAssemblyName { get; set; }
     }
 
@@ -75,12 +74,26 @@ namespace Blazor.Host
 
             // For requests under /_bin, serve assemblies from the client app's bin dir
             var clientBinDir = Path.GetFullPath(Path.Combine(rootPath, "bin", "Debug", "netcoreapp1.0"));
+
             app.UseStaticFiles(new StaticFileOptions
             {
                 FileProvider = new PhysicalFileProvider(clientBinDir),
                 RequestPath = new PathString("/_bin"),
                 ContentTypeProvider = contentTypeProvider
             });
+
+            if (options.EnableDebugging)
+            {
+                if (string.IsNullOrEmpty(options.ClientAssemblyName))
+                {
+                    throw new ArgumentException($"If {nameof(options.EnableDebugging)} is true, then you must specify a value for {nameof(options.ClientAssemblyName)}.");
+                }
+
+                app.UseWebSockets();
+                app.UseBlazorDebugServer(clientBinDir, Path.ChangeExtension(options.ClientAssemblyName, "Views.dll"));
+                app.UseV8DebugTargetsEndpoint();
+                app.UseWdbServer(rootPath, clientBinDir);
+            }
 
             app.UseLiveReloading();
 
@@ -90,7 +103,7 @@ namespace Blazor.Host
                 {
                     throw new ArgumentException($"If {nameof(options.EnableServerSidePrerendering)} is true, then you must specify a value for {nameof(options.ClientAssemblyName)}.");
                 }
-                Prerendering.EnablePrerendering(clientBinDir, options.ClientAssemblyName);
+                Prerendering.EnablePrerendering(rootPath, clientBinDir, options.ClientAssemblyName);
             }
 
             // SPA fallback routing - for requests that don't match physical files, and don't appear
